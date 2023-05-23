@@ -1,0 +1,78 @@
+import json
+import falcon
+import requests
+
+access_token = "your_access_token"  # 填写你的访问令牌
+chat_id = "your_chat_id"  # 填写你的群的chat_id
+file_folder_key = "your_folder_file_key"  # 填写你要上传到的文件夹的file_key
+
+class MessageResource:
+    def on_post(self, req, resp):
+        # 解析接收到的消息
+        data = json.loads(req.stream.read().decode())
+        event_type = data.get("type", "")
+        if event_type == "url_verification":
+            # 如果收到的是验证请求，则直接返回challenge参数
+            challenge = data.get("challenge", "")
+            resp.text = challenge
+            resp.status = falcon.HTTP_200
+        elif event_type == "event_callback":
+            # 如果收到的是事件回调，则处理收到的事件
+            event = data.get("event", {})
+            event_type = event.get("type", "")
+            if event_type == "message" and event.get("message_type", "") == "file":
+                # 如果收到的消息是文件类型，则下载并上传文件
+                file_url = event.get("file", {}).get("url", "")
+                if file_url:
+                    result = download_and_upload_file(file_url)
+                    # 发送一个机器人回复消息，告知下载并上传文件的结果
+                    message_id = event.get("message_id", "")
+                    reply_data = {
+                        "chat_id": chat_id,
+                        "message_id": message_id,
+                        "msg_type": "text",
+                        "content": {
+                            "text": result
+                        }
+                    }
+                    send_bot_reply(reply_data)
+        resp.status = falcon.HTTP_200
+
+def send_bot_reply(data):
+    # 发送机器人回复消息
+    url = "https://open.feishu.cn/open-apis/message/v4/send/"
+    headers = {"Authorization": "Bearer " + access_token, "Content-Type": "application/json"}
+    r = requests.post(url, headers=headers, data=json.dumps(data))
+    if not r.ok:
+        raise Exception("发送机器人回复消息失败！错误代码为：{}".format(r.status_code))
+
+def download_and_upload_file(file_url):
+    # 从指定URL下载文件
+    r = requests.get(file_url)
+    if not r.ok:
+        # 如果下载失败，返回一个错误信息
+        return "下载文件失败！"
+    
+    # 如果下载成功，则获取文件名和文件内容
+    filename = file_url.split("/")[-1]
+    file_content = r.content
+    
+    # 上传文件到指定的文件夹
+    url = "https://open.feishu.cn/open-apis/drive/explorer/v2/file/{}/upload".format(file_folder_key)
+    headers = {"Authorization": "Bearer " + access_token}
+    data = {"name": filename}
+    files = {"file": (filename, file_content)}
+    r = requests.post(url, headers=headers, data=data, files=files)
+    if not r.ok:
+        # 如果上传失败，返回一个错误信息
+        return "上传文件失败！"
+    
+    # 如果上传成功，则返回一个成功信息，包括上传后的文件URL
+    response_data = json.loads(r.content)
+    file_url = response_data.get("data", {}).get("file_url", "")
+    return "下载并上传文件成功！文件URL为：" + file_url
+
+app = falcon.API()
+
+message_resource = MessageResource()
+app.add_route("/message", message_resource)
